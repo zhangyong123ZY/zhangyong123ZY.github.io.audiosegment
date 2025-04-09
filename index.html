@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>音频顺序裁剪工具</title>
+    <script src="https://cdn.jsdelivr.net/npm/audiobuffer-to-wav@1.0.0/index.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            line-height: 1.6;
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+        }
+        .container {
+            background-color: #f9f9f9;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        input[type="file"], input[type="number"], button {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 16px;
+        }
+        button {
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            cursor: pointer;
+            margin-top: 10px;
+            transition: background-color 0.3s;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        .progress-container {
+            margin-top: 20px;
+            display: none;
+        }
+        progress {
+            width: 100%;
+            height: 20px;
+        }
+        .status {
+            margin-top: 10px;
+            font-style: italic;
+            color: #666;
+        }
+        .results {
+            margin-top: 20px;
+            border-top: 1px solid #ddd;
+            padding-top: 20px;
+        }
+        .segment {
+            margin-bottom: 15px;
+            padding: 15px;
+            background-color: #e9f7ef;
+            border-radius: 4px;
+            position: relative;
+        }
+        .segment-controls {
+            display: flex;
+            gap: 10px;
+            margin-top: 10px;
+            flex-wrap: wrap;
+        }
+        .download-btn {
+            background-color: #2196F3;
+            padding: 5px 10px;
+            font-size: 14px;
+            width: auto;
+            display: inline-block;
+        }
+        .download-btn:hover {
+            background-color: #0b7dda;
+        }
+        .preview-btn {
+            background-color: #FF9800;
+            padding: 5px 10px;
+            font-size: 14px;
+            width: auto;
+            display: inline-block;
+        }
+        .preview-btn:hover {
+            background-color: #e68a00;
+        }
+        .stop-btn {
+            background-color: #f44336;
+            padding: 5px 10px;
+            font-size: 14px;
+            width: auto;
+            display: inline-block;
+        }
+        .stop-btn:hover {
+            background-color: #d32f2f;
+        }
+        .batch-download {
+            background-color: #9C27B0;
+            margin-top: 20px;
+            padding: 10px 15px;
+            font-size: 16px;
+        }
+        .batch-download:hover {
+            background-color: #7B1FA2;
+        }
+        audio {
+            width: 100%;
+            margin-top: 10px;
+        }
+        .currently-playing {
+            background-color: #fffde7;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>顺序音频裁剪工具</h1>
+        
+        <div class="form-group">
+            <label for="audioFile">选择音频文件:</label>
+            <input type="file" id="audioFile" accept="audio/*">
+        </div>
+        
+        <div class="form-group">
+            <label for="maxDuration">最大片段长度 (分钟):</label>
+            <input type="number" id="maxDuration" min="0.1" max="60" step="0.1" value="5">
+        </div>
+        
+        <div class="form-group">
+            <label for="silenceThreshold">静音阈值 (dB):</label>
+            <input type="number" id="silenceThreshold" min="-100" max="0" step="1" value="-40">
+        </div>
+        
+        <div class="form-group">
+            <label for="minSilenceDuration">最小静音持续时间 (毫秒):</label>
+            <input type="number" id="minSilenceDuration" min="100" max="5000" step="100" value="500">
+        </div>
+        
+        <button id="processBtn" disabled>处理音频</button>
+        
+        <div class="progress-container" id="progressContainer">
+            <progress id="progressBar" value="0" max="100"></progress>
+            <div class="status" id="statusText">准备处理音频...</div>
+        </div>
+        
+        <div class="results" id="resultsContainer" style="display: none;">
+            <h2>裁剪结果</h2>
+            <div id="segmentsList"></div>
+            <button id="batchDownloadBtn" class="batch-download" style="display: none;">一键全部下载</button>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const audioFileInput = document.getElementById('audioFile');
+            const maxDurationInput = document.getElementById('maxDuration');
+            const silenceThresholdInput = document.getElementById('silenceThreshold');
+            const minSilenceDurationInput = document.getElementById('minSilenceDuration');
+            const processBtn = document.getElementById('processBtn');
+            const progressContainer = document.getElementById('progressContainer');
+            const progressBar = document.getElementById('progressBar');
+            const statusText = document.getElementById('statusText');
+            const resultsContainer = document.getElementById('resultsContainer');
+            const segmentsList = document.getElementById('segmentsList');
+            const batchDownloadBtn = document.getElementById('batchDownloadBtn');
+            
+            let audioBuffer = null;
+            let audioContext = null;
+            let segments = [];
+            let currentAudioSource = null;
+            let currentlyPlayingIndex = null;
+            
+            audioFileInput.addEventListener('change', function(e) {
+                processBtn.disabled = !e.target.files.length;
+            });
+            
+            processBtn.addEventListener('click', async function() {
+                if (!audioFileInput.files[0]) return alert('请先选择音频文件');
+                
+                const file = audioFileInput.files[0];
+                const maxDuration = parseFloat(maxDurationInput.value) * 60;
+                const silenceThreshold = parseFloat(silenceThresholdInput.value);
+                const minSilenceDuration = parseFloat(minSilenceDurationInput.value);
+                
+                progressContainer.style.display = 'block';
+                statusText.textContent = '正在加载音频文件...';
+                progressBar.value = 0;
+                
+                try {
+                    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                    const arrayBuffer = await file.arrayBuffer();
+                    audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+                    
+                    progressBar.value = 20;
+                    statusText.textContent = '正在分析音频中的静音部分...';
+                    const silenceIntervals = detectSilence(audioBuffer, silenceThreshold, minSilenceDuration);
+                    
+                    progressBar.value = 50;
+                    statusText.textContent = '正在分割音频...';
+                    segments = splitAudioIntoChunks(audioBuffer, silenceIntervals, maxDuration);
+                    
+                    progressBar.value = 80;
+                    statusText.textContent = '正在生成音频片段...';
+                    displayResults(segments, file.name);
+                    
+                    progressBar.value = 100;
+                    statusText.textContent = '处理完成!';
+                } catch (error) {
+                    console.error('处理失败:', error);
+                    statusText.textContent = '处理失败: ' + error.message;
+                }
+            });
+
+            function detectSilence(buffer, threshold, minDuration) {
+                const sampleRate = buffer.sampleRate;
+                const minSilenceSamples = (minDuration / 1000) * sampleRate;
+                const combinedData = new Float32Array(buffer.length);
+                
+                for (let i = 0; i < buffer.length; i++) {
+                    let sum = 0;
+                    for (let channel = 0; channel < buffer.numberOfChannels; channel++) {
+                        sum += buffer.getChannelData(channel)[i];
+                    }
+                    combinedData[i] = sum / buffer.numberOfChannels;
+                }
+                
+                const dBData = combinedData.map(sample => 20 * Math.log10(Math.abs(sample) + 1e-6));
+                const silenceIntervals = [];
+                let inSilence = false;
+                let silenceStart = 0;
+                
+                for (let i = 0; i < dBData.length; i++) {
+                    if (dBData[i] < threshold) {
+                        if (!inSilence) silenceStart = i;
+                        inSilence = true;
+                    } else {
+                        if (inSilence) {
+                            const silenceEnd = i;
+                            if (silenceEnd - silenceStart >= minSilenceSamples) {
+                                silenceIntervals.push({
+                                    start: silenceStart / sampleRate,
+                                    end: silenceEnd / sampleRate
+                                });
+                            }
+                            inSilence = false;
+                        }
+                    }
+                }
+                
+                if (inSilence) {
+                    const silenceEnd = dBData.length;
+                    if (silenceEnd - silenceStart >= minSilenceSamples) {
+                        silenceIntervals.push({
+                            start: silenceStart / sampleRate,
+                            end: silenceEnd / sampleRate
+                        });
+                    }
+                }
+                
+                return silenceIntervals;
+            }
+
+            function splitAudioIntoChunks(buffer, silenceIntervals, maxDuration) {
+                const sampleRate = buffer.sampleRate;
+                const segments = [];
+                let currentStart = 0;
+
+                const processSegment = (start, end) => {
+                    const duration = end - start;
+                    const numSub = Math.ceil(duration / maxDuration);
+                    const subDuration = duration / numSub;
+                    
+                    for (let i = 0; i < numSub; i++) {
+                        const subStart = start + i * subDuration;
+                        const subEnd = subStart + subDuration;
+                        segments.push({
+                            start: subStart,
+                            end: subEnd,
+                            buffer: extractAudioSegment(buffer, subStart, subEnd)
+                        });
+                    }
+                };
+
+                silenceIntervals.forEach(silence => {
+                    if (currentStart < silence.start) {
+                        processSegment(currentStart, silence.start);
+                    }
+                    currentStart = silence.end;
+                });
+
+                if (currentStart < buffer.duration) {
+                    processSegment(currentStart, buffer.duration);
+                }
+
+                // 顺序验证
+                segments.forEach((seg, i) => {
+                    if (i > 0 && seg.start < segments[i-1].end) {
+                        console.error('顺序异常:', segments[i-1], seg);
+                    }
+                });
+
+                return segments;
+            }
+
+            function extractAudioSegment(buffer, startTime, endTime) {
+                const startSample = Math.floor(startTime * buffer.sampleRate);
+                const endSample = Math.floor(endTime * buffer.sampleRate);
+                const newBuffer = audioContext.createBuffer(
+                    buffer.numberOfChannels,
+                    endSample - startSample,
+                    buffer.sampleRate
+                );
+                
+                for (let channel = 0; channel < buffer.numberOfChannels; channel++) {
+                    newBuffer.getChannelData(channel)
+                        .set(buffer.getChannelData(channel).subarray(startSample, endSample));
+                }
+                return newBuffer;
+            }
+
+            function displayResults(segments, filename) {
+                resultsContainer.style.display = 'block';
+                segmentsList.innerHTML = '';
+                const baseName = filename.replace(/\.[^/.]+$/, "");
+
+                if (segments.length > 1) {
+                    batchDownloadBtn.style.display = 'block';
+                    if (typeof JSZip === 'undefined') {
+                        const script = document.createElement('script');
+                        script.src = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
+                        document.head.appendChild(script);
+                    }
+                }
+
+                segments.forEach((segment, index) => {
+                    const segmentEl = document.createElement('div');
+                    segmentEl.className = 'segment';
+                    segmentEl.id = `segment-${index}`;
+                    
+                    const duration = (segment.end - segment.start).toFixed(2);
+                    const startTime = formatTime(segment.start);
+                    const endTime = formatTime(segment.end);
+                    const audioUrl = URL.createObjectURL(new Blob(
+                        [audioBufferToWav(segment.buffer)], 
+                        { type: 'audio/wav' }
+                    ));
+
+                    segmentEl.innerHTML = `
+                        <strong>片段 ${index + 1}:</strong>
+                        <div>开始: ${startTime}</div>
+                        <div>结束: ${endTime}</div>
+                        <div>时长: ${duration}秒</div>
+                        <div class="segment-controls">
+                            <button class="preview-btn" data-index="${index}">预览</button>
+                            <button class="stop-btn" data-index="${index}" style="display:none;">停止</button>
+                            <button class="download-btn" data-index="${index}">下载</button>
+                        </div>
+                        <audio controls preload="none" src="${audioUrl}"></audio>
+                    `;
+
+                    const previewBtn = segmentEl.querySelector('.preview-btn');
+                    const stopBtn = segmentEl.querySelector('.stop-btn');
+                    
+                    previewBtn.addEventListener('click', () => {
+                        if (currentAudioSource) currentAudioSource.stop();
+                        currentlyPlayingIndex = index;
+                        segmentEl.classList.add('currently-playing');
+                        previewBtn.style.display = 'none';
+                        stopBtn.style.display = 'inline-block';
+                        
+                        currentAudioSource = audioContext.createBufferSource();
+                        currentAudioSource.buffer = segment.buffer;
+                        currentAudioSource.connect(audioContext.destination);
+                        currentAudioSource.start();
+                        
+                        currentAudioSource.onended = () => {
+                            previewBtn.style.display = 'inline-block';
+                            stopBtn.style.display = 'none';
+                            segmentEl.classList.remove('currently-playing');
+                        };
+                    });
+
+                    stopBtn.addEventListener('click', () => {
+                        currentAudioSource.stop();
+                    });
+
+                    segmentEl.querySelector('.download-btn').addEventListener('click', () => {
+                        downloadSegment(segment.buffer, baseName, index);
+                    });
+
+                    segmentsList.appendChild(segmentEl);
+                });
+            }
+
+            function downloadSegment(buffer, baseName, index) {
+                const sequence = (index + 1).toString().padStart(3, '0');
+                const blob = new Blob([audioBufferToWav(buffer)], { type: 'audio/wav' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `${baseName}_${sequence}.wav`;
+                document.body.appendChild(a);
+                a.click();
+                setTimeout(() => {
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+                }, 100);
+            }
+
+            batchDownloadBtn.addEventListener('click', function() {
+                const baseName = audioFileInput.files[0].name.replace(/\.[^/.]+$/, "");
+                const zip = new JSZip();
+                const folder = zip.folder(baseName);
+
+                segments.forEach((segment, index) => {
+                    const sequence = (index + 1).toString().padStart(3, '0');
+                    folder.file(`${baseName}_${sequence}.wav`, audioBufferToWav(segment.buffer));
+                });
+
+                zip.generateAsync({type: 'blob'}).then(content => {
+                    const url = URL.createObjectURL(content);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `${baseName}_顺序音频包.zip`;
+                    a.click();
+                    URL.revokeObjectURL(url);
+                });
+            });
+
+            function formatTime(seconds) {
+                const hrs = Math.floor(seconds / 3600).toString().padStart(2, '0');
+                const mins = Math.floor((seconds % 3600) / 60).toString().padStart(2, '0');
+                const secs = Math.floor(seconds % 60).toString().padStart(2, '0');
+                const mills = Math.floor((seconds % 1) * 1000).toString().padStart(3, '0');
+                return `${hrs}:${mins}:${secs}.${mills}`;
+            }
+        });
+    </script>
+</body>
+</html>
